@@ -1,0 +1,28 @@
+menu "Application Configuration"
+
+    config TZ
+        string "Timezone spec"
+        default "CET-1CEST,M3.5.0,M10.5.0/03:00:00"
+        help
+            The local timezone specification
+            See https://www.gnu.org/software/libc/manual/html_node/TZ-Variable.html
+
+    config WIFI_SSID
+        string "WiFi SSID"
+        default "FRITZU"
+        help
+            SSID (network name) to connect to.
+
+    config MQTTS_URI
+        string "MQTTS URI"
+        default "mqtts://mqtt.fe.think:8883"
+        help
+            The MQTTS URI of the broker to use.
+
+    config OTA_URI
+        string "OTA URI"
+        default "https://fsun.fe.think/esp32/$(PROJECT_NAME).bin"
+        help
+            The URI where to fetch application updates.
+
+endmenu

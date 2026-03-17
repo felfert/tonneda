@@ -1,0 +1,3 @@
+[submodule "components/syslog"]
+	path = components/syslog
+	url = ../esp32-rtos-syslog
