@@ -1,4 +1,4 @@
 build
 sdkconfig.old
-main/*.crt
-main/*.key
+pki/*.crt
+pki/*.key
