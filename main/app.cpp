@@ -2,7 +2,7 @@
  *
  * Original Copyright (C) 2006-2016, ARM Limited, All Rights Reserved, Apache 2.0 License.
  * Additions Copyright (C) Copyright 2015-2016 Espressif Systems (Shanghai) PTE LTD, Apache 2.0 License.
- * Additions Copyright (C) 2022 Fritz Elfert, Apache 2.0 License
+ * Additions Copyright (C) 2026 Fritz Elfert, Apache 2.0 License
  *
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -35,13 +35,10 @@ extern "C" {
 #include "esp_event.h"
 #include "esp_netif_sntp.h"
 #include "esp_sntp.h"
-#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "esp_mac.h"
 #include "mqtt_client.h"
 #include "esp_ota_ops.h"
-#include "driver/gpio.h"
-#include "rom/ets_sys.h"
 
 #define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
 #include "esp_log.h"
@@ -52,24 +49,26 @@ extern "C" {
 
 #include "x509helper.h"
 #include "https_ota.h"
+#include "app.h"
+#include "tonneda.h"
 
-static std::string identity;
-static esp_mqtt_client_handle_t client;
+std::string identity;
+esp_mqtt_client_handle_t client;
 
-static EventGroupHandle_t appState;
+EventGroupHandle_t appState;
 
-static const EventBits_t WIFI_CONNECTED = BIT0;
-static const EventBits_t MQTT_CONNECTED = BIT1;
-static const EventBits_t OTA_REQUIRED   = BIT2;
-static const EventBits_t OTA_DONE       = BIT3;
-static const EventBits_t NTP_SYNCED     = BIT4;
-static const EventBits_t SYSLOG_QUEUED  = BIT5;
+const EventBits_t WIFI_CONNECTED = BIT0;
+const EventBits_t MQTT_CONNECTED = BIT1;
+const EventBits_t OTA_REQUIRED   = BIT2;
+const EventBits_t OTA_DONE       = BIT3;
+const EventBits_t NTP_SYNCED     = BIT4;
+const EventBits_t SYSLOG_QUEUED  = BIT5;
 
 static const esp_app_desc_t *ad;
 
 static esp_netif_t *sta_netif = nullptr;
 
-static const char* TAG      = "tonneda";
+const char* TAG      = "tonneda";
 static const char* TAG_MEM  = "heap";
 static const char* TAG_MQTT = "mqtt";
 
@@ -147,8 +146,6 @@ static void wifi_setup(void)
     ESP_ERROR_CHECK(esp_wifi_start());
 }
 
-static QueueHandle_t gpio_evt_queue = nullptr;
-
 /**
  * Publish current version to MQTT.
  */
@@ -199,6 +196,22 @@ static void mqtt_action(const std::string &topic, const std::string &data) {
         syslog(LOG_NOTICE, "Rebooting...");
         closelog();
         esp_restart();
+        return;
+    }
+    if (match_exact && (0 == topic.compare("esp32/calibrate"))) {
+        if (!calibrating) {
+            ESP_LOGD(TAG, "Calibrating...");
+            syslog(LOG_NOTICE, "Calibrating...");
+            calibrating = true;
+        }
+        return;
+    }
+    if (match_exact && (0 == topic.compare("esp32/endcalibrate"))) {
+        if (calibrating) {
+            ESP_LOGD(TAG, "Saving calibration...");
+            syslog(LOG_NOTICE, "Saving calibration...");
+            calibrating = false;
+        }
         return;
     }
     if (0 == topic.compare("esp32/update")) {
@@ -356,180 +369,6 @@ static void mqtt_setup(void)
 }
 
 
-static gpio_num_t *triggers = new gpio_num_t[3] {
-    GPIO_NUM_32, GPIO_NUM_17, GPIO_NUM_18,
-};
-
-typedef struct {
-    gpio_num_t red;
-    gpio_num_t green;
-} led_t;
-
-static led_t *leds = new led_t[3] {
-    {.red = GPIO_NUM_25, .green = GPIO_NUM_26},
-    {.red = GPIO_NUM_22, .green = GPIO_NUM_23},
-    {.red = GPIO_NUM_19, .green = GPIO_NUM_21},
-};
-
-
-typedef struct {
-    gpio_num_t port;
-    uint8_t index;
-    uint64_t start; // usecs rising edge
-} isr_echo_t;
-
-// See https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/peripherals/gpio.html#_CPPv411gpio_configPK13gpio_config_t
-// for remarks on which ports NOT to use.
-static isr_echo_t *echos = new isr_echo_t[3] {
-    {.port = GPIO_NUM_35, .index = 0, .start = 0 },
-    {.port = GPIO_NUM_34, .index = 1, .start = 0 },
-    {.port = GPIO_NUM_33, .index = 2, .start = 0 },
-};
-
-static int nrSensors = 3;
-
-/**
- * Switches LEDS on/off
- */
-static void switchleds(uint8_t index, uint8_t onoff) {
-    if (index < nrSensors) {
-        gpio_set_level(leds[index].red, onoff&1 ? 1 : 0);
-        gpio_set_level(leds[index].green, onoff&2 ? 1 : 0);
-    }
-}
-
-/**
- * Trigger task
- * Triggers all US-Sensors in a loop
- */
-static void trigger_task(void * pvParameter) {
-    while (true) {
-        vTaskDelay(500 / portTICK_PERIOD_MS);
-        // ESP_LOGI(TAG, "trigger_task");
-        for (int i = 0; i < nrSensors; i++) {
-            gpio_set_level(triggers[i], 1);
-            ets_delay_us(10);
-            gpio_set_level(triggers[i], 0);
-        }
-    }
-}
-
-
-static std::deque<float> history;
-
-/**
- * Echo task
- * Publishes changes queued by echo_isr to MQTT.
- */
-static void echo_task(void * pvParameter) {
-    uint64_t msg;
-    while (true) {
-        if (xQueueReceive(gpio_evt_queue, &msg, portMAX_DELAY)) {
-            uint64_t duration = msg & 0xfffffffffffffffc;
-            uint8_t index = msg & 3;
-            float distance = duration / 58.00; // (340m/s * 1us) / 2
-
-            // calculate average
-            history.push_front(distance);
-            if (history.size() > 10) {
-                history.pop_back();
-            }
-            float average = 0.0;
-            for (float f : history) {
-                average += f;
-            }
-            average /= history.size();
-
-
-            ESP_LOGI(TAG, "S:%d %8.2f cm %8.2f", index, distance, average);
-            //publish_gpio(gpio);
-        }
-    }
-}
-
-/**
- * The gpio ISR
- * Measures echo impulse duration and enqueues an event with the result.
- */
-static void IRAM_ATTR echo_isr(void *arg) {
-    uint64_t now = esp_timer_get_time();
-    isr_echo_t *echo = (isr_echo_t *)arg;
-
-    // rising edge: just store ticks
-    if (gpio_get_level(echo->port)) {
-        echo->start = now;
-        return;
-    }
-
-    // falling edge: enqueue events only if we are connected to MQTT
-    if (xEventGroupWaitBits(appState, MQTT_CONNECTED, pdFALSE, pdFALSE, 0) & MQTT_CONNECTED) {
-        uint64_t duration = now - echo->start; // this ignores overflows
-        if (duration > 100) {
-            // Lowest 3bits are the index
-            duration = (duration & 0xfffffffffffffffc) | (echo->index & 3);
-            xQueueSendFromISR(gpio_evt_queue, &duration, nullptr);
-        }
-    }
-}
-
-static void setup_gpio() {
-
-    // configure input pins (US-Sensor's Echo pins)
-    gpio_config_t echo_conf = {
-        .pin_bit_mask = 0,
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_ANYEDGE,
-    };
-    for (int i = 0; i < nrSensors; i++) {
-        echo_conf.pin_bit_mask |= (1ULL << echos[i].port);
-    }
-    ESP_ERROR_CHECK(gpio_config(&echo_conf));
-
-    // configure output pins (US-Sensor's Trigger)
-    gpio_config_t trigger_conf = {
-        .pin_bit_mask = 0,
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    for (int i = 0; i < nrSensors; i++) {
-        trigger_conf.pin_bit_mask |= (1ULL << triggers[i]);
-    }
-    ESP_ERROR_CHECK(gpio_config(&trigger_conf));
-
-    // configure output pins (LEDS)
-    gpio_config_t led_conf = {
-        .pin_bit_mask = 0,
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    for (int i = 0; i < nrSensors; i++) {
-        led_conf.pin_bit_mask |= (1ULL << leds[i].green);
-        led_conf.pin_bit_mask |= (1ULL << leds[i].red);
-    }
-    ESP_ERROR_CHECK(gpio_config(&led_conf));
-
-    // Create queue for echo events and task for delivering event to mqtt
-    gpio_evt_queue = xQueueCreate(10, sizeof(uint64_t));
-    xTaskCreate(&echo_task, "echo_task", 2048, nullptr, 10, nullptr);
-
-    /// install gpio isr service
-    ESP_ERROR_CHECK(gpio_install_isr_service(ESP_INTR_FLAG_IRAM));
-
-    // hook isr handlers for specific gpio pin
-    for (int i = 0; i < nrSensors; i++) {
-        ESP_ERROR_CHECK(gpio_isr_handler_add(echos[i].port, echo_isr, (void *)&(echos[i])));
-    }
-
-    // Start trigger_task which pulls all triggers in a loop
-    xTaskCreate(&trigger_task, "trigger_task", 2048, nullptr, 2 | portPRIVILEGE_BIT, nullptr);
-}
-
 static ota_params_t ota_params = {
     .done_event = OTA_DONE,
     .cacert = (const char *)ca_crt_start,
@@ -604,6 +443,7 @@ void app_main()
     mqtt_setup();
     esp_netif_ip_info_t ip;
     memset(&ip, 0, sizeof(esp_netif_ip_info_t));
+    io_calibration(true);
     while (true) {
         EventBits_t bits = xEventGroupWaitBits(appState, WIFI_CONNECTED,
                 pdFALSE, pdFALSE, 2000 / portTICK_PERIOD_MS);
@@ -616,7 +456,7 @@ void app_main()
             }
             if (ESP_OK == esp_mqtt_client_start(client)) {
                 xTaskCreate(&update_check_task, "update_check_task", 2048, nullptr, 2, nullptr);
-                setup_gpio();
+                setup_tonneda();
                 break;
             }
             vTaskDelay(2000 / portTICK_PERIOD_MS);
