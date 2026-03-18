@@ -111,6 +111,7 @@ static void trigger_task(void * pvParameter) {
 // Time to switch off LEDs
 static time_t led_offtime[3] = {0, };
 static bool led_active[3] = {false, };
+static bool led_blinking[3] = {false, };
 
 /**
  * LED off task
@@ -129,6 +130,33 @@ static void ledoff_task(void * pvParameter) {
                 switchleds(i, 0);
             }
         }
+    }
+}
+
+static bool blink_on = false;
+
+static void blink_task(void * pvParameter) {
+    while (true) {
+        vTaskDelay(200 / portTICK_PERIOD_MS);
+        for (uint8_t i = 0; i < nrSensors; i++) {
+            if (led_blinking[i]) {
+                switchleds(i, blink_on ? 3 : 0);
+            }
+        }
+        blink_on = !blink_on;
+    }
+}
+
+void start_blinking(uint8_t index) {
+    if (index < nrSensors) {
+        led_blinking[index] = true;
+    }
+}
+
+void stop_blinking(uint8_t index) {
+    if (index < nrSensors) {
+        led_blinking[index] = false;
+        switchleds(index, 0);
     }
 }
 
@@ -170,7 +198,10 @@ static void echo_task(void * pvParameter) {
             if (led_active[index]) {
                 switchleds(index, tonneda ? 2 : 1);
             }
-            publish_tonne(index, tonneda);
+            // publish to MQTT only if MQTT is actually connected.
+            if (xEventGroupWaitBits(appState, MQTT_CONNECTED, pdFALSE, pdFALSE, 0) & MQTT_CONNECTED) {
+                publish_tonne(index, tonneda);
+            }
         }
     }
 }
@@ -189,14 +220,12 @@ static void IRAM_ATTR echo_isr(void *arg) {
         return;
     }
 
-    // falling edge: enqueue events only if we are connected to MQTT
-    if (xEventGroupWaitBits(appState, MQTT_CONNECTED, pdFALSE, pdFALSE, 0) & MQTT_CONNECTED) {
-        uint64_t duration = now - echo->start; // this ignores overflows
-        if (duration > 100) {
-            // Lowest 3bits are the index
-            duration = (duration & 0xfffffffffffffffc) | (echo->index & 3);
-            xQueueSendFromISR(gpio_evt_queue, &duration, nullptr);
-        }
+    // falling edge: calculate duration im usecs an enqueue result
+    uint64_t duration = now - echo->start; // this ignores overflows
+    if (duration > 100) {
+        // Lowest 3bits are the index
+        duration = (duration & 0xfffffffffffffffc) | (echo->index & 3);
+        xQueueSendFromISR(gpio_evt_queue, &duration, nullptr);
     }
 }
 
@@ -243,7 +272,7 @@ void setup_tonneda() {
     ESP_ERROR_CHECK(gpio_config(&led_conf));
 
     // Create queue for echo events and task for delivering event to mqtt
-    gpio_evt_queue = xQueueCreate(10, sizeof(uint64_t));
+    gpio_evt_queue = xQueueCreate(30, sizeof(uint64_t));
     xTaskCreate(&echo_task, "echo_task", 2048, nullptr, 3, nullptr);
 
     /// install gpio isr service
@@ -257,6 +286,7 @@ void setup_tonneda() {
     // Start trigger_task which pulls all triggers in a loop
     xTaskCreate(&trigger_task, "trigger_task", 2048, nullptr, 3 | portPRIVILEGE_BIT, nullptr);
     xTaskCreate(&ledoff_task, "ledoff_task", 2048, nullptr, tskIDLE_PRIORITY | portPRIVILEGE_BIT, nullptr);
+    xTaskCreate(&blink_task, "blink_task", 2048, nullptr, tskIDLE_PRIORITY | portPRIVILEGE_BIT, nullptr);
 }
 
 static void set_calibration_defaults() {
@@ -268,6 +298,11 @@ static void set_calibration_defaults() {
     }
 }
 
+/*
+ * Attempt to read calibration from NVS
+ * Called from app_main() during startup. If no values are in NVS,
+ * Initialize values in set_calibration_defaults() instead.
+ */
 void io_calibration(bool readmode) {
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open("tonneda", NVS_READWRITE, &nvs_handle);

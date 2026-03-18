@@ -210,6 +210,7 @@ static void mqtt_action(const std::string &topic, const std::string &data) {
         if (calibrating) {
             ESP_LOGD(TAG, "Saving calibration...");
             syslog(LOG_NOTICE, "Saving calibration...");
+            io_calibration(false);
             calibrating = false;
         }
         return;
@@ -224,6 +225,20 @@ static void mqtt_action(const std::string &topic, const std::string &data) {
         if (match_exact || match_any) {
             enable_debug(0 == topic.compare("esp32/debug"));
         }
+        return;
+    }
+    if (match_exact && topic.starts_with("esp32/blink") && topic.length() == 12
+            && topic[11] >= '0' && topic[11] < '3') {
+        uint8_t index = std::stoi(topic.substr(11));
+        calibrating = false;
+        start_blinking(index);
+        return;
+    }
+    if (match_exact && topic.starts_with("esp32/noblink") && topic.length() == 14
+            && topic[13] >= '0' && topic[13] < '3') {
+        uint8_t index = std::stoi(topic.substr(13));
+        stop_blinking(index);
+        return;
     }
 }
 
