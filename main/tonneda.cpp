@@ -114,13 +114,15 @@ static void trigger_task(void * pvParameter) {
 }
 
 // Time to switch off LEDs
-static time_t led_offtime[3] = {0, };
-static bool led_active[3] = {false, };
-static bool led_blinking[3] = {false, };
+static time_t led_offtime[3] = {0, 0, 0};
+// Flag: LEDs show distance
+static bool led_active[3] = {false, false, false};
+// Flag: LEDs are blinking
+static bool led_blinking[3] = {false, false, false};
 
 /**
  * LED off task
- * Disables LEDs 1min after activation.
+ * Disables LEDs when led_offtime has been reached.
  */
 static void ledoff_task(void * pvParameter) {
     while (true) {
@@ -150,6 +152,13 @@ static void blink_task(void * pvParameter) {
         }
         blink_on = !blink_on;
     }
+}
+
+bool is_blinking(uint8_t index) {
+    if (index < nrSensors) {
+        return led_blinking[index];
+    }
+    return false;
 }
 
 void start_blinking(uint8_t index) {
@@ -191,7 +200,7 @@ static void echo_task(void * pvParameter) {
             average /= history.size();
             ESP_LOGD(TAG, "%d %8.2f %8.2f", index, distance, average);
             calibration_t cal = calibration[index];
-            if (distance < cal.led_enable) {
+            if (distance < cal.led_enable && led_offtime[index] == 0) {
                 ESP_LOGI(TAG, "switch on leds %d", index);
                 led_offtime[index] = time(nullptr) + 30;
                 led_active[index] = true;

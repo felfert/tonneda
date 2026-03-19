@@ -227,6 +227,15 @@ static void mqtt_action(const std::string &topic, const std::string &data) {
         }
         return;
     }
+    if (match_exact && topic.starts_with("esp32/blink?") && topic.length() == 13
+            && topic[12] >= '0' && topic[12] < '3') {
+        uint8_t index = std::stoi(topic.substr(12));
+        const char *blinking = is_blinking(index) ? "true" : "false";
+        char topic[50];
+        snprintf(topic, sizeof(topic), "esp32/blinking%d/%s", index, blinking);
+        esp_mqtt_client_publish(client, topic, identity.c_str(), 0, 0, 0);
+        return;
+    }
     if (match_exact && topic.starts_with("esp32/blink") && topic.length() == 12
             && topic[11] >= '0' && topic[11] < '3') {
         uint8_t index = std::stoi(topic.substr(11));
