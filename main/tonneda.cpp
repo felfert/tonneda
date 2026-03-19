@@ -31,10 +31,15 @@ extern "C" {
 
 static QueueHandle_t gpio_evt_queue = nullptr;
 
-static void publish_tonne(uint8_t index, bool tonneda) {
-    char topic[50];
-    snprintf(topic, sizeof(topic), "esp32/tonne%d/%s", index, tonneda ? "true" : "false");
-    esp_mqtt_client_publish(client, topic, identity.c_str(), 0, 0, 0);
+static bool last_tonneda[3] = {false,};
+
+static void publish_tonne(uint8_t index, bool tonneda, bool force = false) {
+    if (force || last_tonneda[index] != tonneda) {
+        char topic[50];
+        snprintf(topic, sizeof(topic), "esp32/tonne%d/%s", index, tonneda ? "true" : "false");
+        esp_mqtt_client_publish(client, topic, identity.c_str(), 0, 0, 0);
+        last_tonneda[index] = tonneda;
+    }
 }
 
 static void publish_dist(uint8_t index, float distance, float average) {
