@@ -107,7 +107,7 @@ static void init_identity(void) {
     if (identity.empty()) {
         mbedtls_x509_crt mycert;
         mbedtls_x509_crt_init(&mycert);
-        if (0 > mbedtls_x509_crt_parse(&mycert, client_crt_start, client_crt_bytes)) {
+        if (0 > mbedtls_x509_crt_parse(&mycert, client_crt_der_start, client_crt_der_bytes)) {
             ESP_LOGE(TAG, "Unable to parse client cert");
             abort();
         }
@@ -139,9 +139,9 @@ static void wifi_setup(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_eap_client_set_identity((uint8_t*)identity.c_str(), identity.length()));
-    ESP_ERROR_CHECK(esp_eap_client_set_ca_cert(ca_crt_start, ca_crt_bytes));
-    ESP_ERROR_CHECK(esp_eap_client_set_certificate_and_key(client_crt_start, client_crt_bytes,
-                client_key_start, client_key_bytes, nullptr, 0));
+    ESP_ERROR_CHECK(esp_eap_client_set_ca_cert(ca_crt_der_start, ca_crt_der_bytes));
+    ESP_ERROR_CHECK(esp_eap_client_set_certificate_and_key(client_crt_der_start, client_crt_der_bytes,
+                client_key_der_start, client_key_der_bytes, nullptr, 0));
     ESP_ERROR_CHECK(esp_wifi_sta_enterprise_enable());
     ESP_ERROR_CHECK(esp_wifi_start());
 }
@@ -368,17 +368,17 @@ static void mqtt_setup(void)
                 .uri = CONFIG_MQTTS_URI,
             },
             .verification = {
-                .certificate = (const char *)ca_crt_start,
-                .certificate_len = ca_crt_bytes,
+                .certificate = (const char *)ca_crt_der_start,
+                .certificate_len = ca_crt_der_bytes,
             }
         },
         .credentials = {
             .client_id = idbuf,
             .authentication = {
-                .certificate = (const char *)client_crt_start,
-                .certificate_len = client_crt_bytes,
-                .key = (const char *)client_key_start,
-                .key_len = client_key_bytes,
+                .certificate = (const char *)client_crt_der_start,
+                .certificate_len = client_crt_der_bytes,
+                .key = (const char *)client_key_der_start,
+                .key_len = client_key_der_bytes,
             },
         },
         .session = {
@@ -395,7 +395,7 @@ static void mqtt_setup(void)
 
 static ota_params_t ota_params = {
     .done_event = OTA_DONE,
-    .cacert = (const char *)ca_crt_start,
+    .cacert = (const char *)ca_crt_der_start,
 };
 
 /**
