@@ -7,5 +7,5 @@ project(tonneda)
 
 add_custom_target(otaupdate
     COMMAND scp "${PROJECT_NAME}.bin" "otaserver:/var/www/html/fsun/esp32_updates/"
-    COMMAND esp32update `openssl x509 -noout -subject -in ${CMAKE_SOURCE_DIR}/main/client.crt -nameopt sep_multiline | grep CN= | cut -d= -f2`
+    COMMAND esp32update `openssl x509 -noout -subject -in ${CMAKE_SOURCE_DIR}/pki/client.crt -nameopt sep_multiline | grep CN= | cut -d= -f2`
 )
